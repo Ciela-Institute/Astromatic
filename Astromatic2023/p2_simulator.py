@@ -45,7 +45,7 @@ def prior(N, simulator, prior_params): # N is the number of samples we want to d
     pyro.clear_param_store()
     
     with pyro.plate("N", N, device=DEVICE):
-        params = OrderedDict(name: OrderedDict() for name in  simulator.params.dynamic.keys())
+        params = OrderedDict({name: OrderedDict() for name in simulator.params.dynamic.keys()})
         for name, module in simulator.params.dynamic.items():
             for p in module.keys():
                 if p=="x0" or p=="y0": # positional parameter
