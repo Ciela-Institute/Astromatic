@@ -1,6 +1,6 @@
 import torch
-import torch.nn.functional as F
 from torch.func import vmap
+from torch.nn import functional as F
 from astropy.wcs import WCS
 from astropy import units
 from astropy.io import fits
@@ -8,6 +8,8 @@ from astropy.coordinates import SkyCoord
 import numpy as np
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 from skimage.restoration import richardson_lucy
+
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
 
 def deconvolve_fft(image, psf, pad_size = 100):
     """
@@ -165,18 +167,19 @@ def make_wcs(skycoord, orientation, pixels, pixel_size):
     
 
 def make_forward_model(
-        psf:np.ndarray, 
-        model_pixels:int,
-        model_pixel_size:float,
-        observation_pixels:int,
-        observation_pixel_size:float,
-        wcs_list:list[WCS, ...]=None, 
-        super_sampling_factor:int=4,
-        zero_padding:int=0,
-        fiducial_center:SkyCoord=None,
-        fiducial_orientation:float=None, # Pick the orientation of the first WCS, angle East of North
-        **kwargs
-        ):
+    psf:np.ndarray, 
+    model_pixels:int,
+    model_pixel_size:float,
+    observation_pixels:int,
+    observation_pixel_size:float,
+    wcs_list:list[WCS, ...]=None, 
+    super_sampling_factor:int=1,
+    fiducial_center:SkyCoord=None,
+    fiducial_orientation:float=None, 
+    zero_padding:int=0,
+    device=DEVICE,
+    **kwargs
+    ):
     """
     Create a forward model for a given point spread function (PSF) and a list of world coordinate systems (WCS).
 
@@ -196,9 +199,6 @@ def make_forward_model(
 
     model_pixel_size : units.Quantity
         The size of each pixel in the model pixel grid. It should be an instance of the units.Quantity class.
-
-    zero_padding : int, optional
-        The number of zero padding pixels to be added to the model pixel grid on each side. Default is 0.
 
     fiducial_center : SkyCoord, optional
         The fiducial center to be used for the model reference pixel. It should be an instance of the SkyCoord class. 
@@ -224,10 +224,11 @@ def make_forward_model(
     """
     if wcs_list is None:
         center = SkyCoord(ra=10*units.deg, dec=20*units.deg)
-        wcs_list = [make_wcs(center, 0., pixels=observation_pixels, pixel_size=observation_pixel_size * units.arcsec)]
+        wcs_list = [make_wcs(center, 0., observation_pixels, observation_pixel_size * units.arcsec)]
+
     C = 1
     H, W = psf.shape
-    psf = torch.tensor(psf).float().to(DEVICE).view(C, 1, H, W) # reshape to a convolution kernel [channel_out, channels_in/groups, H, W]
+    psf = torch.tensor(psf).float().to(device).view(C, 1, H, W) # reshape to a convolution kernel [channel_out, channels_in/groups, H, W]
     batched_interpolation = vmap(interpolate, in_dims=(0, None))  # only batch over the images (first argument of interpolate)
     
     if fiducial_center is None:
@@ -249,9 +250,11 @@ def make_forward_model(
         u, v = np.meshgrid(u, v, indexing="ij")
         world = wcs.pixel_to_world(u, v)
         model_coordinates = np.stack(fiducial_wcs.world_to_pixel(world), axis=0)
-        model_coordinates_list.append(torch.tensor(model_coordinates).float().to(DEVICE))
+        model_coordinates_list.append(torch.tensor(model_coordinates).float().to(device))
     
     def A(x):
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
         x = F.pad(x, pad=[zero_padding]*4, mode="constant", value=0.)
         ys = []
         for i in range(len(wcs_list)):
